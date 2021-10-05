@@ -128,6 +128,8 @@ class HTTPClient(object):
         match = "\A&(\S*?)=(.*)\Z"
         #match.group[0] = attributes
         #match.group[1] = value
+        # Same as GET, just parse the attributes &attrname=attrvalue
+        # HTTP POST handles at least Content-Type: application/x-www-form-urlencoded
         body = ""
         return HTTPResponse(code, body)
 
