@@ -125,7 +125,7 @@ class HTTPClient(object):
 
     def POST(self, url, args=None):
         code = 500
-        #match = "\A&(\S*?)=(.*)\Z"
+        match = "\A&(\S*?)=(.*)\Z"
         #match.group[0] = attributes
         #match.group[1] = value
         body = ""
