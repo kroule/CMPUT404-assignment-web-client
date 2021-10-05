@@ -68,12 +68,66 @@ class HTTPClient(object):
         return buffer.decode('utf-8')
 
     def GET(self, url, args=None):
-        code = 500
-        body = ""
-        return HTTPResponse(code, body)
+        result = urllib.parse.urlparse(url)
+        path = result.path
+        host = result.netloc.split(':')[0]
+        port = 80
+        if len(result.netloc.split(':')) > 1:
+            port = int(result.netloc.split(':')[1])
+        #else:
+            #host = socket.gethostbyname(host)
+
+        body = f"GET {url} HTTP/1.1\r\nHost: {host}\r\n\r\n"
+        self.connect(host, port)
+        self.sendall(body)
+        self.socket.shutdown(socket.SHUT_WR)
+        recieved = self.recvall(self.socket)
+        print("###############################")
+        print(recieved)
+
+        content = ''
+        start = False
+        match = [
+            "\AHTTP\/(.*?) (\d*?) (.*)\Z",
+            "\A(.+?): (.*)\Z",
+            "\A(.+?): (\S*, \d{2} \S{3} \d{4} \d\d:\d\d:\d\d \S*)\Z"
+        ]
+        lines = recieved.splitlines()
+        attributes = {}
+        code = 0
+        for i in range(len(lines)):
+            if lines[i] == '':
+                start = True
+                continue
+
+            if start:
+                content+=lines[i]+'\r\n'
+                continue
+
+            reg = re.match(match[0], lines[i])
+            if reg:
+                code = int(reg.groups()[1])
+                continue
+            reg = re.match(match[2], lines[i])
+            if reg:
+                attributes[reg.groups()[0]] = reg.groups()[1]
+                continue
+            reg = re.match(match[1], lines[i])
+            if reg:
+                attributes[reg.groups()[0]] = reg.groups()[1]
+                continue
+
+        print(attributes)
+        print(code)
+        print("-------------------------------")
+        self.socket.close()
+        return HTTPResponse(code, content)
 
     def POST(self, url, args=None):
         code = 500
+        #match = "\A&(\S*?)=(.*)\Z"
+        #match.group[0] = attributes
+        #match.group[1] = value
         body = ""
         return HTTPResponse(code, body)
 
