@@ -33,7 +33,8 @@ class HTTPResponse(object):
         self.body = body
 
 class HTTPClient(object):
-    #def get_host_port(self,url):
+    STATUS_CODE = 'HTTP/1\.([0,1]) (.*?) (.*?)\Z'
+    HEADERS     = '\A(.+?): (.*?)\Z'
 
     def connect(self, host, port):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -41,13 +42,79 @@ class HTTPClient(object):
         return None
 
     def get_code(self, data):
+        linebyline = data.splitlines()
+
+        # "In the interest of robustness, servers SHOULD ignore any empty line(s) received where a Request-Line is expected. 
+        # In other words, if the server is reading the protocol stream at the beginning of a message and receives a CRLF first, it should ignore the CRLF.""
+        for line in linebyline:
+            if line == '':
+                continue
+
+            result = re.match(self.STATUS_CODE, line)
+            if result and result.group(2).isnumeric():
+                return int(result.group(2))
+            else:
+                return None
+
         return None
 
-    def get_headers(self,data):
-        return None
+    def get_headers(self, data):
+        linebyline = data.splitlines()
+        past_status_code = False
+        headers = {}
+
+        for line in linebyline:
+            if line == '':
+                if past_status_code:
+                    break
+                continue
+
+            if not past_status_code:
+                r_result = re.match(self.STATUS_CODE, line)
+                if r_result:
+                    past_status_code = True
+                continue
+
+            result = re.match(self.HEADERS, line)
+            # Incorrect header format? Just skip and go to next?
+            if not result:
+                continue
+
+            # Matched attribute with no value? Ignore
+            if len(result.groups()) < 2:
+                continue
+
+            # headers = { {date : "2021 something something"}, ... }
+            headers[result.group(1)] = result.group(2)
+
+        return headers
 
     def get_body(self, data):
-        return None
+        linebyline = data.splitlines()
+        body = ''
+        past_status_code, past_headers = False, False
+
+        for line in linebyline:
+            if past_status_code and past_headers:
+                body += line + '\r\n'
+                continue
+
+            if line == '':
+                past_headers = past_status_code
+                continue
+
+            if not past_status_code:
+                result = re.match(self.STATUS_CODE, line)
+                if result:
+                    past_status_code = True
+                    continue
+                else:
+                    # First non-empty line was garb
+                    return
+                
+                past_headers = True
+
+        return body
     
     def sendall(self, data):
         self.socket.sendall(data.encode('utf-8'))
@@ -67,70 +134,80 @@ class HTTPClient(object):
                 done = not part
         return buffer.decode('utf-8')
 
-    def GET(self, url, args=None):
+    def parse_url(self, url):
         result = urllib.parse.urlparse(url)
-        path = result.path
-        host = result.netloc.split(':')[0]
+        host = result.netloc
         port = 80
-        if len(result.netloc.split(':')) > 1:
-            port = int(result.netloc.split(':')[1])
-        #else:
-            #host = socket.gethostbyname(host)
 
-        body = f"GET {url} HTTP/1.1\r\nHost: {host}\r\n\r\n"
+        if ':' in host:
+            host, port = host.split(':')
+            if port.isnumeric():
+                port = int(port)
+
+        return host, port
+
+
+
+    def GET(self, url, args=None):
+        host, port = self.parse_url(url)
+
+        header = f"GET {url} HTTP/1.1\r\nHost: {host}\r\n"
+        header += "Connection: close\r\n"
+
+        if args:
+            for arg, val in args.items():
+                header += arg + ': ' + val + '\r\n'
+
+        header += '\r\n'
+
         self.connect(host, port)
-        self.sendall(body)
+        self.sendall(header)
         self.socket.shutdown(socket.SHUT_WR)
-        recieved = self.recvall(self.socket)
-        print("###############################")
-        print(recieved)
 
-        content = ''
-        start = False
-        match = [
-            "\AHTTP\/(.*?) (\d*?) (.*)\Z",
-            "\A(.+?): (.*)\Z",
-            "\A(.+?): (\S*, \d{2} \S{3} \d{4} \d\d:\d\d:\d\d \S*)\Z"
-        ]
-        lines = recieved.splitlines()
-        attributes = {}
-        code = 0
-        for i in range(len(lines)):
-            if lines[i] == '':
-                start = True
-                continue
+        response = self.recvall(self.socket)
 
-            if start:
-                content+=lines[i]+'\r\n'
-                continue
+        code = self.get_code(response)
+        body = self.get_body(response)
+        #headers = self.get_headers(response)
 
-            reg = re.match(match[0], lines[i])
-            if reg:
-                code = int(reg.groups()[1])
-                continue
-            reg = re.match(match[2], lines[i])
-            if reg:
-                attributes[reg.groups()[0]] = reg.groups()[1]
-                continue
-            reg = re.match(match[1], lines[i])
-            if reg:
-                attributes[reg.groups()[0]] = reg.groups()[1]
-                continue
-
-        print(attributes)
-        print(code)
-        print("-------------------------------")
         self.socket.close()
-        return HTTPResponse(code, content)
+
+        return HTTPResponse(code, body)
 
     def POST(self, url, args=None):
-        code = 500
-        match = "\A&(\S*?)=(.*)\Z"
-        #match.group[0] = attributes
-        #match.group[1] = value
-        # Same as GET, just parse the attributes &attrname=attrvalue
-        # HTTP POST handles at least Content-Type: application/x-www-form-urlencoded
-        body = ""
+        host, port = self.parse_url(url)
+
+        header = f'POST {url} HTTP/1.1\r\nHost: {host}\r\n'
+        header+= 'Connection: close\r\n'
+        header+= 'Content-Type: application/x-www-form-urlencoded\r\n'
+        header+= 'Content-Length: '
+        body = ''
+
+        if args:
+            for arg, val in args.items():
+                formatted = urllib.parse.quote(val, safe=' ')
+                formatted = '+'.join(formatted.split())
+                body += arg + '=' + formatted + '&'
+
+            body=body[:-1]
+            header+=str(len(body))+'\r\n'
+        else:
+            header+= '0\r\n'
+
+        header+='\r\n'
+
+        self.connect(host, port)
+        self.sendall(header+body)
+        self.socket.shutdown(socket.SHUT_WR)
+        
+        response = self.recvall(self.socket)
+
+        code = self.get_code(response)
+        body = self.get_body(response)
+        #headers = self.get_headers(response)
+
+        self.socket.close()
+
         return HTTPResponse(code, body)
 
     def command(self, url, command="GET", args=None):
